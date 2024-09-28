@@ -1,4 +1,7 @@
 const std = @import("std");
+const Build = std.Build;
+const ResolvedTarget = Build.ResolvedTarget;
+const OptimizeMode = std.builtin.OptimizeMode;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -15,8 +18,9 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "mdbx-nim",
+    const libmdbx = buildLibmdbx(b, target, optimize);
+
+    const bindings_mod = b.addModule("mdbx-zig", .{
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
         .root_source_file = b.path("src/root.zig"),
@@ -24,13 +28,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    bindings_mod.addImport("libmdbx", libmdbx);
+
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
-    b.installArtifact(lib);
+    // b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
-        .name = "mdbx-nim",
+        .name = "mdbx-zig",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -88,4 +94,54 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+fn buildLibmdbx(b: *Build, target: ResolvedTarget, optimize: OptimizeMode) *Build.Module {
+    const libmdbx = b.dependency("libmdbx", .{});
+
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = libmdbx.path("mdbx.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const mod = b.addModule("libmdbx", .{
+        .root_source_file = translate_c.getOutput(),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+
+    const libmdbx_a = try buildLibMdbxStatic(b, target, optimize);
+    mod.addIncludePath(libmdbx.path("."));
+    mod.linkLibrary(libmdbx_a);
+    return mod;
+}
+
+fn buildLibMdbxStatic(b: *Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) !*Build.Step.Compile {
+    const libmdbx_dep = b.dependency("libmdbx", .{});
+
+    const libmdbx_a = b.addStaticLibrary(.{
+        .name = "mdbx",
+        .target = target,
+        .optimize = optimize,
+    });
+
+    libmdbx_a.addIncludePath(libmdbx_dep.path("."));
+
+    libmdbx_a.addCSourceFiles(.{ .root = libmdbx_dep.path("."), .files = &.{
+        "mdbx_chk.c",
+        "mdbx_copy.c",
+        "mdbx_drop.c",
+        "mdbx_dump.c",
+        "mdbx_load.c",
+        "mdbx_stat.c",
+        "mdbx.c",
+    }, .flags = &.{
+        "--std=c11",
+    } });
+
+    b.installArtifact(libmdbx_a);
+    return libmdbx_a;
 }
